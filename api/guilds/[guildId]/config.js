@@ -1,8 +1,10 @@
-const {cors,requireAuth,configs,mergeConfig}=require("../../_lib");
-module.exports=(req,res)=>{
+const {cors,requireAuth,requireGuildAccess,configs,mergeConfig}=require("../../_lib");
+module.exports=async(req,res)=>{
   cors(res);if(req.method==="OPTIONS")return res.status(204).end();
   const s=requireAuth(req,res);if(!s)return;
-  const id=req.query.guildId;
+  const id=String(req.query.guildId||"");
+  if(!id)return res.status(400).json({error:"Guild ID is required."});
+  try{await requireGuildAccess(s,id);}catch(e){return res.status(e.status||502).json({error:e.status===403?e.message:"Unable to verify server permissions."});}
   if(req.method==="GET")return res.json({guildId:id,config:mergeConfig(configs.get(id))});
   if(req.method!=="PUT")return res.status(405).json({error:"Method not allowed"});
   const body=req.body||{};
