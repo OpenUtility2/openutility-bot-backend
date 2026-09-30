@@ -29,8 +29,7 @@ module.exports = async (req, res) => {
   }
 
   const { code, state, error } = req.query || {};
-  const front =
-    process.env.FRONTEND_URL || "https://openutility2.github.io";
+  const front = "https://openutility2.github.io/openutility-bot-web";
 
   if (error) {
     return res.redirect(`${front}/?auth=error`);
