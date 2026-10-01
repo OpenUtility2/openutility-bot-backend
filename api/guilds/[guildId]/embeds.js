@@ -18,18 +18,18 @@ module.exports=async(req,res)=>{
   const id=String(req.query.guildId||"");if(!validGuildId(id))return res.status(400).json({error:"Invalid guild ID."});
   try{await requireGuildAccess(s,id);}catch(e){return res.status(e.status||502).json({error:e.status===403?e.message:"Unable to verify server permissions."});}
   try{
-    const key=embedKey(id), saved=(await dbGet(key))||[];
+    const key=embedKey(id),saved=(await dbGet(key))||[];
     if(req.method==="GET")return res.json({embeds:saved});
     if(req.method!=="POST")return res.status(405).json({error:"Method not allowed"});
-    const b=req.body||{}, embed=cleanEmbed(b.embed||b), action=b.action||"save";
+    const b=req.body||{},embed=cleanEmbed(b.embed||b),action=b.action||"save";
     if(!embed.title&&!embed.description&&!embed.fields?.length)return res.status(400).json({error:"Embed needs content."});
     if(action==="send"){
       if(!process.env.DISCORD_BOT_TOKEN)return res.status(503).json({error:"Bot token is not configured."});
       const channelId=String(b.channelId||"");if(!/^\d{17,20}$/.test(channelId))return res.status(400).json({error:"A valid channel ID is required."});
-      await discordFetch(`https://discord.com/api/v10/channels/${channelId}/messages`,{method:"POST",headers:{Authorization:`Bot ${process.env.DISCORD_BOT_TOKEN},Content-Type":"application/json"},body:JSON.stringify({embeds:[embed]})});
+      await discordFetch(`https://discord.com/api/v10/channels/${channelId}/messages`,{method:"POST",headers:{Authorization:`Bot ${process.env.DISCORD_BOT_TOKEN}`,"Content-Type":"application/json"},body:JSON.stringify({embeds:[embed]})});
       return res.json({ok:true,sent:true});
     }
-    const idValue=String(b.id||Date.now());const next=[...saved.filter(x=>x.id!==idValue),{id:idValue,name:String(b.name||embed.title||"Untitled").slice(0,80),embed,updatedAt:new Date().toISOString()}].slice(-50);
-    await dbSet(key,next);res.json({ok:true,embed:next[next.length-1],embeds:next});
+    const idValue=String(b.id||Date.now()),record={id:idValue,name:String(b.name||embed.title||"Untitled").slice(0,80),embed,updatedAt:new Date().toISOString()};
+    const next=[...saved.filter(x=>x.id!==idValue),record].slice(-50);await dbSet(key,next);res.json({ok:true,embed:record,embeds:next});
   }catch(e){console.error(e);res.status(e.status||503).json({error:e.message||"Embed operation failed."});}
 };
