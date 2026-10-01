@@ -1,123 +1,23 @@
 const crypto = require("crypto");
-
 const memory = globalThis.__openutilityMemory || (globalThis.__openutilityMemory = new Map());
-
-function secretKey() {
-  const secret = process.env.SESSION_SECRET || process.env.DISCORD_CLIENT_SECRET;
-  if (!secret) throw new Error("SESSION_SECRET is not configured");
-  return crypto.createHash("sha256").update(secret).digest();
-}
-function cookieOptions() { return "Path=/; HttpOnly; Secure; SameSite=None; Max-Age=604800"; }
-function parseCookies(req) {
-  const raw = req.headers.cookie || "";
-  return Object.fromEntries(raw.split(";").filter(Boolean).map(part => {
-    const i = part.indexOf("=");
-    return [part.slice(0, i).trim(), decodeURIComponent(part.slice(i + 1).trim())];
-  }));
-}
-function encryptSession(data) {
-  const iv = crypto.randomBytes(12), cipher = crypto.createCipheriv("aes-256-gcm", secretKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return [iv, tag, encrypted].map(b => b.toString("base64url")).join(".");
-}
-function decryptSession(value) {
-  try {
-    const [ivRaw, tagRaw, encryptedRaw] = String(value || "").split(".");
-    if (!ivRaw || !tagRaw || !encryptedRaw) return null;
-    const decipher = crypto.createDecipheriv("aes-256-gcm", secretKey(), Buffer.from(ivRaw, "base64url"));
-    decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
-    return JSON.parse(Buffer.concat([
-      decipher.update(Buffer.from(encryptedRaw, "base64url")), decipher.final()
-    ]).toString("utf8"));
-  } catch { return null; }
-}
-function setSession(res, data) {
-  res.setHeader("Set-Cookie", `openutility_sid=${encryptSession({...data, createdAt: Date.now()})}; ${cookieOptions()}`);
-}
-function getSession(req) {
-  const id = parseCookies(req).openutility_sid;
-  const session = id ? decryptSession(id) : null;
-  if (!session || !session.createdAt || Date.now() - session.createdAt > 604800000) return null;
-  return session;
-}
-function clearSession(req, res) {
-  res.setHeader("Set-Cookie", "openutility_sid=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");
-}
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", process.env.FRONTEND_URL || "https://openutility2.github.io");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Vary", "Origin");
-}
-function defaultConfig() {
-  return {
-    prefix: "!",
-    commands: { slash: true, prefix: true },
-    welcome: { enabled: false, channelId: null, message: "Welcome {user} to {server}!" },
-    automod: { enabled: false, antiSpam: false, antiLinks: false, blockedWords: [] },
-    moderation: { enabled: true, warnings: true, timeoutMinutes: 10 },
-    logging: { enabled: true, messageLogs: false, memberLogs: false, moderationLogs: true, commandLogs: true, messageChannelId: null, memberChannelId: null, moderationChannelId: null, commandChannelId: null },
-    updatedAt: new Date().toISOString()
-  };
-}
-function mergeConfig(existing) {
-  const b = defaultConfig(), e = existing || {};
-  return {
-    ...b, ...e,
-    commands: { ...b.commands, ...(e.commands || {}) },
-    welcome: { ...b.welcome, ...(e.welcome || {}) },
-    automod: { ...b.automod, ...(e.automod || {}) },
-    moderation: { ...b.moderation, ...(e.moderation || {}) },
-    logging: { ...b.logging, ...(e.logging || {}) }
-  };
-}
-async function discordFetch(url, options = {}) {
-  const r = await fetch(url, options), text = await r.text();
-  let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!r.ok) { const e = new Error(data.message || `Discord API ${r.status}`); e.status = r.status; throw e; }
-  return data;
-}
-function requireAuth(req, res) {
-  const s = getSession(req);
-  if (!s || !s.user || !s.accessToken) { res.status(401).json({ error: "Not authenticated" }); return null; }
-  return s;
-}
-function manageable(g) {
-  const p = BigInt(g.permissions || "0");
-  return !!g.owner || (p & 8n) === 8n || (p & 32n) === 32n;
-}
-async function requireGuildAccess(session, guildId) {
-  const guilds = await discordFetch("https://discord.com/api/v10/users/@me/guilds", { headers: { Authorization: `Bearer ${session.accessToken}` } });
-  const guild = guilds.find(g => g.id === String(guildId));
-  if (!guild || !manageable(guild)) { const e = new Error("You do not have permission to manage this server."); e.status = 403; throw e; }
-  return guild;
-}
-function validGuildId(id) { return /^\d{17,20}$/.test(String(id || "")); }
-async function dbCommand(command) {
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) return null;
-  const r = await fetch(process.env.UPSTASH_REDIS_REST_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`, "Content-Type": "application/json" },
-    body: JSON.stringify(command)
-  });
-  if (!r.ok) throw new Error(`Database error ${r.status}`);
-  return (await r.json()).result;
-}
-async function dbGet(key) {
-  const result = await dbCommand(["GET", key]);
-  if (result !== null) return result ? JSON.parse(result) : null;
-  return memory.get(key) || null;
-}
-async function dbSet(key, value) {
-  const encoded = JSON.stringify(value);
-  const result = await dbCommand(["SET", key, encoded]);
-  if (result !== null) return value;
-  memory.set(key, value); return value;
-}
-function configKey(guildId) { return `guild:${guildId}:config`; }
-function loggingKey(guildId) { return `guild:${guildId}:logging`; }
-function embedKey(guildId) { return `guild:${guildId}:embeds`; }
-
-module.exports = { memory, cookieOptions, parseCookies, setSession, getSession, clearSession, cors, defaultConfig, mergeConfig, discordFetch, requireAuth, manageable, requireGuildAccess, validGuildId, dbGet, dbSet, configKey, loggingKey, embedKey };
+function secretKey(){const secret=process.env.SESSION_SECRET||process.env.DISCORD_CLIENT_SECRET;if(!secret)throw new Error("SESSION_SECRET is not configured");return crypto.createHash("sha256").update(secret).digest()}
+function cookieOptions(){return "Path=/; HttpOnly; Secure; SameSite=None; Max-Age=604800"}
+function parseCookies(req){const raw=req.headers.cookie||"";return Object.fromEntries(raw.split(";").filter(Boolean).map(part=>{const i=part.indexOf("=");return [part.slice(0,i).trim(),decodeURIComponent(part.slice(i+1).trim())]}))}
+function encryptSession(data){const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv("aes-256-gcm",secretKey(),iv);const encrypted=Buffer.concat([cipher.update(JSON.stringify(data),"utf8"),cipher.final()]);const tag=cipher.getAuthTag();return [iv,tag,encrypted].map(b=>b.toString("base64url")).join(".")}
+function decryptSession(value){try{const [ivRaw,tagRaw,encryptedRaw]=String(value||"").split(".");if(!ivRaw||!tagRaw||!encryptedRaw)return null;const decipher=crypto.createDecipheriv("aes-256-gcm",secretKey(),Buffer.from(ivRaw,"base64url"));decipher.setAuthTag(Buffer.from(tagRaw,"base64url"));return JSON.parse(Buffer.concat([decipher.update(Buffer.from(encryptedRaw,"base64url")),decipher.final()]).toString("utf8"))}catch{return null}}
+function setSession(res,data){res.setHeader("Set-Cookie",`openutility_sid=${encryptSession({...data,csrfToken:crypto.randomBytes(24).toString("hex"),createdAt:Date.now()})}; ${cookieOptions()}`)}
+function getSession(req){const id=parseCookies(req).openutility_sid;const session=id?decryptSession(id):null;if(!session||!session.createdAt||Date.now()-session.createdAt>604800000)return null;return session}
+function clearSession(req,res){res.setHeader("Set-Cookie","openutility_sid=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0")}
+function cors(res){res.setHeader("Access-Control-Allow-Origin",process.env.FRONTEND_URL||"https://openutility2.github.io");res.setHeader("Access-Control-Allow-Credentials","true");res.setHeader("Access-Control-Allow-Headers","Content-Type, X-CSRF-Token");res.setHeader("Access-Control-Allow-Methods","GET,POST,PUT,DELETE,OPTIONS");res.setHeader("Vary","Origin")}
+function defaultConfig(){return{prefix:"!",commands:{slash:true,prefix:true},welcome:{enabled:false,channelId:null,message:"Welcome {user} to {server}!"},automod:{enabled:false,antiSpam:false,antiLinks:false,blockedWords:[]},moderation:{enabled:true,warnings:true,timeoutMinutes:10},logging:{enabled:true,messageLogs:false,memberLogs:false,moderationLogs:true,commandLogs:true,messageChannelId:null,memberChannelId:null,moderationChannelId:null,commandChannelId:null},updatedAt:new Date().toISOString()}}
+function mergeConfig(existing){const b=defaultConfig(),e=existing||{};return{...b,...e,commands:{...b.commands,...(e.commands||{})},welcome:{...b.welcome,...(e.welcome||{})},automod:{...b.automod,...(e.automod||{})},moderation:{...b.moderation,...(e.moderation||{})},logging:{...b.logging,...(e.logging||{})}}}
+async function discordFetch(url,options={}){const r=await fetch(url,options),text=await r.text();let data={};try{data=text?JSON.parse(text):{}}catch{data={raw:text}}if(!r.ok){const e=new Error(data.message||`Discord API ${r.status}`);e.status=r.status;throw e}return data}
+function requireAuth(req,res){const s=getSession(req);if(!s||!s.user||!s.accessToken){res.status(401).json({error:"Not authenticated"});return null}if(!["GET","HEAD","OPTIONS"].includes(req.method)){if(!s.csrfToken||req.headers["x-csrf-token"]!==s.csrfToken){res.status(403).json({error:"Invalid CSRF token"});return null}}return s}
+function manageable(g){const p=BigInt(g.permissions||"0");return!!g.owner||(p&8n)===8n||(p&32n)===32n}
+async function requireGuildAccess(session,guildId){const guilds=await discordFetch("https://discord.com/api/v10/users/@me/guilds",{headers:{Authorization:`Bearer ${session.accessToken}`}});const guild=guilds.find(g=>g.id===String(guildId));if(!guild||!manageable(guild)){const e=new Error("You do not have permission to manage this server.");e.status=403;throw e}return guild}
+function validGuildId(id){return/^\d{17,20}$/.test(String(id||""))}
+async function dbCommand(command){if(!process.env.UPSTASH_REDIS_REST_URL||!process.env.UPSTASH_REDIS_REST_TOKEN)return null;const r=await fetch(process.env.UPSTASH_REDIS_REST_URL,{method:"POST",headers:{Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN},"Content-Type":"application/json"},body:JSON.stringify(command)});if(!r.ok)throw new Error(`Database error ${r.status}`);return(await r.json()).result}
+async function dbGet(key){const result=await dbCommand(["GET",key]);if(result!==null)return result?JSON.parse(result):null;return memory.get(key)||null}
+async function dbSet(key,value){const result=await dbCommand(["SET",key,JSON.stringify(value)]);if(result!==null)return value;memory.set(key,value);return value}
+function configKey(guildId){return`guild:${guildId}:config`}function loggingKey(guildId){return`guild:${guildId}:logging`}function embedKey(guildId){return`guild:${guildId}:embeds`}
+module.exports={memory,cookieOptions,parseCookies,setSession,getSession,clearSession,cors,defaultConfig,mergeConfig,discordFetch,requireAuth,manageable,requireGuildAccess,validGuildId,dbGet,dbSet,configKey,loggingKey,embedKey};
