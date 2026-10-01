@@ -20,7 +20,7 @@ module.exports = async (req, res) => {
 
   const { code, state, error } = req.query || {};
   const front = "https://openutility.bot.nu";
-  const dashboard = `${front}/dashboard.html`;
+  const dashboard = `${front}/dashboard/`;
 
   if (error) return res.redirect(`${front}/?auth=error`);
   if (!code || !state) return res.status(400).send("Invalid OAuth response.");
