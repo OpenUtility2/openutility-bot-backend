@@ -1,3 +1,8 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/me", "destination": "/api/health?route=me" },
+    { "source": "/api/csrf", "destination": "/api/health?route=csrf" },
+    { "source": "/api/logout", "destination": "/api/health?route=logout" }
+  ]
 }
