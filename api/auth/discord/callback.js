@@ -19,7 +19,7 @@ module.exports = async (req, res) => {
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const { code, state, error } = req.query || {};
-  const front = "https://openutility2.github.io/openutility-bot-web";
+  const front = "https://openutility.bot.nu";
   const dashboard = `${front}/dashboard.html`;
 
   if (error) return res.redirect(`${front}/?auth=error`);
